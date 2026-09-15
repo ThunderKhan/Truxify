@@ -277,7 +277,10 @@ export class RegionService {
 
     async replicateToRegion(region, data) {
         try {
-            await axios.post(`${region.endpoint}/api/replication/receive`, data);
+            const headers = process.env.REPLICATION_API_KEY
+                ? { 'x-replication-key': process.env.REPLICATION_API_KEY }
+                : {};
+            await axios.post(`${region.endpoint}/api/replication/receive`, data, { headers });
             await this.redis.set(`replication:${region.name}:last_sync`, Date.now());
         } catch (error) {
             logger.error(`Failed to replicate to ${region.name}:`, error);
@@ -298,7 +301,7 @@ export class RegionService {
                 failed_regions: event.failed,
                 recovered_regions: event.recovered,
                 timestamp: event.timestamp
-            }]);
+            ]);
         
         if (error) throw error;
     }
