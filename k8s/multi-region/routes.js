@@ -1,8 +1,41 @@
+import crypto from 'crypto';
 import express from 'express';
 import regionService from './region-service.js';
 import logger from '../../backend/api/src/middleware/logger.js';
 
 const router = express.Router();
+
+const authenticateReplicationRequest = (req, res, next) => {
+    const configuredKey = process.env.REPLICATION_API_KEY;
+    const providedKey = req.get('x-replication-key');
+
+    if (!configuredKey) {
+        logger.error('Replication authentication is not configured: REPLICATION_API_KEY is missing');
+        return res.status(503).json({
+            success: false,
+            error: 'Replication authentication is not configured'
+        });
+    }
+
+    if (!providedKey) {
+        return res.status(401).json({
+            success: false,
+            error: 'Unauthorized'
+        });
+    }
+
+    const configuredDigest = crypto.createHash('sha256').update(configuredKey).digest();
+    const providedDigest = crypto.createHash('sha256').update(providedKey).digest();
+
+    if (!crypto.timingSafeEqual(configuredDigest, providedDigest)) {
+        return res.status(401).json({
+            success: false,
+            error: 'Unauthorized'
+        });
+    }
+
+    return next();
+};
 
 // Get region metrics
 router.get('/regions/metrics', async (req, res) => {
@@ -83,7 +116,7 @@ router.post('/regions/route', async (req, res) => {
 });
 
 // Replication receive endpoint
-router.post('/replication/receive', async (req, res) => {
+router.post('/replication/receive', authenticateReplicationRequest, async (req, res) => {
     try {
         await regionService.receiveData(req.body);
         res.json({
