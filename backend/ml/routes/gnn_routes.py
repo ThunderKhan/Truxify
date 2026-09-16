@@ -62,7 +62,7 @@ async def build_graph(nodes: List[Node], edges: List[Edge]):
             'data': {
                 'nodes': len(graph.nodes),
                 'edges': len(graph.edges),
-                'is_connected': nx.is_connected(graph)
+                'is_connected': nx.is_weakly_connected(graph)
             },
             'timestamp': datetime.now().isoformat()
         }
