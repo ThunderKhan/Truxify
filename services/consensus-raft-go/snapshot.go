@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -88,31 +89,58 @@ func (rn *RaftNode) persistSnapshotLocked(snap RaftSnapshot) error {
 	return os.Rename(tmp, rn.snapshotPath)
 }
 
-// loadSnapshot reads a previously persisted snapshot so recovery is bounded by
-// the snapshot plus the small retained log delta. A missing file is not an
-// error (first boot). It must be called before run() starts.
-func (rn *RaftNode) loadSnapshot(path string) error {
-	rn.mu.Lock()
-	defer rn.mu.Unlock()
-	rn.snapshotPath = path
+// loadSnapshotLocked loads snapshot metadata/state and reconciles any log that
+// was already recovered from the WAL. The snapshot owns the log prefix through
+// SnapshotIndex, so only entries after that boundary may remain in rn.Log.
+func (rn *RaftNode) loadSnapshotLocked(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			rn.snapshotPath = path
 			return nil
 		}
 		return err
 	}
+
 	var snap RaftSnapshot
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return err
 	}
+	if snap.State == nil {
+		snap.State = make(map[string]string)
+	}
+
+	trim := 0
+	for trim < len(rn.Log) && rn.Log[trim].Index <= snap.Index {
+		trim++
+	}
+	if trim > 0 {
+		rn.Log = rn.Log[trim:]
+	}
+	if len(rn.Log) > 0 && rn.Log[0].Index != snap.Index+1 {
+		return fmt.Errorf("raft snapshot index %d is incompatible with recovered log starting at index %d", snap.Index, rn.Log[0].Index)
+	}
+
+	rn.snapshotPath = path
 	rn.snapshotIndex = snap.Index
 	rn.snapshotTerm = snap.Term
 	rn.snapshotState = snap.State
-	if rn.snapshotState == nil {
-		rn.snapshotState = make(map[string]string)
+	if rn.CommitIndex < snap.Index {
+		rn.CommitIndex = snap.Index
+	}
+	if rn.LastApplied < snap.Index {
+		rn.LastApplied = snap.Index
 	}
 	return nil
+}
+
+// loadSnapshot reads a previously persisted snapshot so recovery is bounded by
+// the snapshot plus the small retained log delta. When a WAL has already been
+// replayed, the recovered prefix is reconciled against the snapshot boundary.
+func (rn *RaftNode) loadSnapshot(path string) error {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.loadSnapshotLocked(path)
 }
 
 // HandleSnapshot implements the Raft InstallSnapshot RPC for followers that
