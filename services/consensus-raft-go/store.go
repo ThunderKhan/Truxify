@@ -86,6 +86,15 @@ func (rn *RaftNode) recoverFromWAL(path string) error {
 		return err
 	}
 
+	// The snapshot owns the compacted log prefix. Apply it after WAL replay so
+	// the recovered log is reduced to the suffix that remains authoritative.
+	if snapshotPath := os.Getenv("RAFT_SNAPSHOT_PATH"); snapshotPath != "" {
+		if err := rn.loadSnapshotLocked(snapshotPath); err != nil {
+			file.Close()
+			return err
+		}
+	}
+
 	rn.wal = file
 	rn.storePath = path
 	return nil
