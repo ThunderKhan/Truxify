@@ -99,16 +99,16 @@ class GNNRouteModel(nn.Module):
 RouteGNN = GNNRouteModel
 
 class GraphNetworkBuilder:
-    """Build road network graphs for GNN."""
+    """Build directed road-network graphs for GNN routing."""
     
     def __init__(self):
-        """Initialize empty road network graph and feature mappings."""
-        self.graph = nx.Graph()
+        """Initialize an empty multigraph and feature mappings."""
+        self.graph = nx.MultiDiGraph()
         self.node_features = {}
         self.edge_features = {}
         
     def build_road_network(self, nodes, edges):
-        """Build road network from nodes and edges"""
+        """Build the directed road network while preserving parallel edges."""
         # Add nodes
         for node in nodes:
             self.graph.add_node(
@@ -120,7 +120,8 @@ class GraphNetworkBuilder:
                 speed_limit=node.get('speed_limit', 50)
             )
             
-        # Add edges
+        # Add each road segment as a separate keyed edge. MultiDiGraph keeps
+        # distinct payloads for multiple segments sharing the same endpoints.
         for edge in edges:
             self.graph.add_edge(
                 edge['source'],
@@ -138,7 +139,7 @@ class GraphNetworkBuilder:
         return self.graph
     
     def extract_features(self):
-        """Extract node and edge features"""
+        """Extract node and directed edge features, including parallel edges."""
         node_features = []
         edge_indices = []
         edge_features = []
@@ -156,8 +157,8 @@ class GraphNetworkBuilder:
             ]
             node_features.append(features)
         
-        # Edge features
-        for u, v, data in self.graph.edges(data=True):
+        # Edge features. Include every keyed parallel edge in the PyG graph.
+        for u, v, _, data in self.graph.edges(data=True, keys=True):
             edge_indices.append([node_map[u], node_map[v]])
             edge_features.append([
                 data.get('distance', 0) / 100,
@@ -211,7 +212,7 @@ class RouteOptimizer:
         logger.info(f"✅ Route Optimizer initialized on {self.device}")
     
     def optimize_route(self, start_node, end_node, graph_data, objectives=['time', 'cost', 'fuel'], constraints=None):
-        """Optimize route using GNN and constrained Dijkstra pathfinding."""
+        """Optimize route using GNN and constrained shortest-path search."""
         try:
             # Convert to PyTorch Geometric
             data = graph_data.to(self.device)
@@ -256,13 +257,41 @@ class RouteOptimizer:
             logger.error(f"Route optimization failed: {e}")
             return None
     
+    def _iter_outgoing_edges(self, graph, node):
+        """Yield destination, edge key, and attributes for every outgoing segment."""
+        if graph.is_multigraph():
+            yield from graph.out_edges(node, keys=True, data=True)
+        else:
+            for neighbor, data in graph[node].items():
+                yield node, neighbor, None, data
+
+    def _edge_weight(self, current, neighbor, edge_attrs, embeddings, objectives, graph_data, node_map, constraints):
+        """Return a scored edge or None when route constraints reject it."""
+        if constraints.get('hazmat', False) and not edge_attrs.get('hazmat_allowed', True):
+            return None
+
+        truck_weight = constraints.get('truck_weight') or constraints.get('weight')
+        max_weight = edge_attrs.get('max_weight') or edge_attrs.get('weight_limit')
+        if truck_weight is not None and max_weight is not None and truck_weight > max_weight:
+            return None
+
+        truck_height = constraints.get('truck_height') or constraints.get('height')
+        max_height = edge_attrs.get('max_height') or edge_attrs.get('height_limit')
+        if truck_height is not None and max_height is not None and truck_height > max_height:
+            return None
+
+        return self._calculate_score(
+            embeddings, current, neighbor, objectives, graph_data, node_map, edge_attrs
+        )
+
     def _find_optimal_route(self, start, end, embeddings, graph_data, objectives, constraints=None):
-        """Find optimal route using constrained shortest path with GNN heuristics and HOS limits."""
+        """Find an optimal feasible route while retaining the selected parallel edge."""
         if not hasattr(graph_data, 'graph'):
             logger.warning("graph_data has no graph attribute")
             return None
 
-        if start not in graph_data.graph or end not in graph_data.graph:
+        graph = graph_data.graph
+        if start not in graph or end not in graph:
             logger.warning(f"Start ({start}) or End ({end}) node not found in graph")
             return None
 
@@ -271,79 +300,87 @@ class RouteOptimizer:
 
         node_map = getattr(graph_data, 'node_map', None)
         constraints = constraints or {}
-
-        def weight_func(u, v, edge_attrs):
-            # Hard constraints validation
-            # 1. Hazmat restriction: if route has hazmat cargo, road must permit hazmat
-            if constraints.get('hazmat', False) and not edge_attrs.get('hazmat_allowed', True):
-                return None
-
-            # 2. Weight / Capacity constraint: truck weight exceeds road capacity / bridge rating
-            truck_weight = constraints.get('truck_weight') or constraints.get('weight')
-            max_weight = edge_attrs.get('max_weight') or edge_attrs.get('weight_limit')
-            if truck_weight is not None and max_weight is not None and truck_weight > max_weight:
-                return None
-
-            # 3. Height / Clearance constraint
-            truck_height = constraints.get('truck_height') or constraints.get('height')
-            max_height = edge_attrs.get('max_height') or edge_attrs.get('height_limit')
-            if truck_height is not None and max_height is not None and truck_height > max_height:
-                return None
-
-            return self._calculate_score(embeddings, u, v, objectives, graph_data, node_map)
-
         max_time = constraints.get('max_time') or constraints.get('hos_limit')
-        path = None
 
-        if max_time is not None:
-            # Constrained shortest path: track cumulative elapsed time in priority queue
-            # to prune paths exceeding max_time and explore feasible alternate routes
-            pq = [(0.0, 0.0, start, [start])]
-            best_state = {}
+        # State: (score, elapsed_time, tie_breaker, node, node_path, edge_path).
+        pq = [(0.0, 0.0, 0, start, [start], [])]
+        counter = 1
+        best_score = {}
+        nondominated = {}
+        selected_edge_path = None
 
-            while pq:
-                curr_score, curr_time, u, u_path = heapq.heappop(pq)
+        while pq:
+            curr_score, curr_time, _, current, node_path, edge_path = heapq.heappop(pq)
 
-                if u == end:
-                    path = u_path
-                    break
+            if current == end:
+                selected_edge_path = edge_path
+                break
 
-                if u in best_state:
-                    prev_score, prev_time = best_state[u]
-                    if curr_score >= prev_score and curr_time >= prev_time:
-                        continue
-                best_state[u] = (curr_score, curr_time)
+            if max_time is None:
+                if curr_score >= best_score.get(current, float('inf')):
+                    continue
+                best_score[current] = curr_score
+            else:
+                labels = nondominated.setdefault(current, [])
+                if any(score <= curr_score and elapsed <= curr_time for score, elapsed in labels):
+                    continue
+                nondominated[current] = [
+                    (score, elapsed)
+                    for score, elapsed in labels
+                    if not (curr_score <= score and curr_time <= elapsed)
+                ] + [(curr_score, curr_time)]
 
-                for v in graph_data.graph.neighbors(u):
-                    if v in u_path:
-                        continue
-                    edge_attrs = graph_data.graph[u][v]
-                    edge_weight = weight_func(u, v, edge_attrs)
-                    if edge_weight is None:
-                        continue
+            if graph.is_multigraph():
+                outgoing = graph.out_edges(current, keys=True, data=True)
+            else:
+                outgoing = (
+                    (current, neighbor, None, data)
+                    for neighbor, data in graph[current].items()
+                )
 
-                    edge_time = float(edge_attrs.get('time', 0))
-                    new_time = curr_time + edge_time
-                    if new_time > max_time:
-                        continue
+            for _, neighbor, edge_key, edge_attrs in outgoing:
+                if neighbor in node_path:
+                    continue
 
-                    new_score = curr_score + edge_weight
-                    heapq.heappush(pq, (new_score, new_time, v, u_path + [v]))
-        else:
-            try:
-                path = nx.dijkstra_path(graph_data.graph, start, end, weight=weight_func)
-            except (nx.NetworkXNoPath, nx.NodeNotFound):
-                logger.warning(f"No feasible path found from {start} to {end}")
-                return None
+                edge_weight = self._edge_weight(
+                    current,
+                    neighbor,
+                    edge_attrs,
+                    embeddings,
+                    objectives,
+                    graph_data,
+                    node_map,
+                    constraints,
+                )
+                if edge_weight is None:
+                    continue
 
-        if not path or len(path) < 2:
+                edge_time = float(edge_attrs.get('time', 0))
+                new_time = curr_time + edge_time
+                if max_time is not None and new_time > max_time:
+                    continue
+
+                new_score = curr_score + edge_weight
+                heapq.heappush(
+                    pq,
+                    (
+                        new_score,
+                        new_time,
+                        counter,
+                        neighbor,
+                        node_path + [neighbor],
+                        edge_path + [(current, neighbor, edge_key, edge_attrs)],
+                    ),
+                )
+                counter += 1
+
+        if selected_edge_path is None:
+            logger.warning(f"No feasible path found from {start} to {end}")
             return None
 
         route = []
-        for i in range(len(path) - 1):
-            u, v = path[i], path[i + 1]
-            edge_data = graph_data.graph[u][v]
-            route.append({
+        for u, v, edge_key, edge_data in selected_edge_path:
+            segment = {
                 'from': u,
                 'to': v,
                 'distance': edge_data.get('distance', 0),
@@ -351,14 +388,18 @@ class RouteOptimizer:
                 'cost': edge_data.get('cost', 0),
                 'fuel': edge_data.get('fuel', 0),
                 'congestion': edge_data.get('congestion', 0)
-            })
+            }
+            if edge_key is not None:
+                segment['edge_key'] = edge_key
+            route.append(segment)
 
         return route
     
-    def _calculate_score(self, embeddings, current, neighbor, objectives, graph_data, node_map=None):
+    def _calculate_score(self, embeddings, current, neighbor, objectives, graph_data, node_map=None, edge_data=None):
         """Calculate route score using GNN embeddings and selected edge objectives."""
         score = 0.0
-        edge_data = graph_data.graph[current][neighbor]
+        if edge_data is None:
+            edge_data = graph_data.graph[current][neighbor]
         
         weights = {
             'time': 1.0,
@@ -385,7 +426,7 @@ class RouteOptimizer:
             except Exception:
                 pass
         
-        # Non-negative weight guard for Dijkstra
+        # Non-negative weight guard for shortest-path search
         return max(score, 1e-6)
     
     def train(self, train_data, val_data=None, epochs=100):
@@ -460,15 +501,13 @@ class RouteOptimizer:
         return best_route
     
     def real_time_update(self, current_route, new_traffic_data):
-        """Update route based on real-time traffic"""
-        # Update graph with new traffic data
+        """Update route based on real-time traffic."""
         for edge in current_route:
             edge_id = f"{edge['from']}-{edge['to']}"
             if edge_id in new_traffic_data:
                 edge['time'] = new_traffic_data[edge_id]['time']
                 edge['cost'] = new_traffic_data[edge_id]['cost']
         
-        # Re-optimize if needed
         if self._needs_reoptimization(current_route):
             return self._reoptimize(current_route)
         
@@ -476,7 +515,6 @@ class RouteOptimizer:
     
     def _needs_reoptimization(self, route):
         """Check if route needs reoptimization"""
-        # Check if any edge has high congestion
         for edge in route:
             if edge.get('congestion', 0) > 0.7:
                 return True
@@ -486,6 +524,4 @@ class RouteOptimizer:
         """Re-optimize route with current data"""
         start = route[0]['from']
         end = route[-1]['to']
-        # Rebuild graph with current data
-        # In production: use current graph
         return route
