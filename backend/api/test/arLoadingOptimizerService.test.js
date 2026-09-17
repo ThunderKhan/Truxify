@@ -76,8 +76,11 @@ describe('ARLoadingOptimizerService', () => {
     });
 
     for (const placement of plan.placementSequence) {
-      const [, , ] = placement.arBoundingBox.min;
+      const [minX, minY, minZ] = placement.arBoundingBox.min;
       const [maxX, maxY, maxZ] = placement.arBoundingBox.max;
+      expect(minX).toBeGreaterThanOrEqual(0);
+      expect(minY).toBeGreaterThanOrEqual(0);
+      expect(minZ).toBeGreaterThanOrEqual(0);
       expect(maxX).toBeLessThanOrEqual(1);
       expect(maxY).toBeLessThanOrEqual(1);
       expect(maxZ).toBeLessThanOrEqual(1);
