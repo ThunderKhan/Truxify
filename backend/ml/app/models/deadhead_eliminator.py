@@ -20,7 +20,7 @@ def _haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     Returns:
         Distance in kilometres.
     """
-    R = 6371.0  # Earth radius in km
+    R = 6371.0
 
     lat1_r, lon1_r = math.radians(lat1), math.radians(lon1)
     lat2_r, lon2_r = math.radians(lat2), math.radians(lon2)
@@ -46,6 +46,31 @@ def _to_naive(dt: datetime) -> datetime:
     to naive (local-time) datetimes right after parsing.
     """
     return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
+def _fits_any_orientation(
+    length: float,
+    width: float,
+    height: float,
+    max_length: float,
+    max_width: float,
+    max_height: float,
+) -> bool:
+    """Return whether a load fits in the truck in any axis-aligned orientation."""
+    orientations = (
+        (length, width, height),
+        (length, height, width),
+        (width, length, height),
+        (width, height, length),
+        (height, length, width),
+        (height, width, length),
+    )
+    return any(
+        oriented_length <= max_length
+        and oriented_width <= max_width
+        and oriented_height <= max_height
+        for oriented_length, oriented_width, oriented_height in orientations
+    )
 
 
 # Maximum detour threshold as a fraction of the total trip distance.
@@ -110,11 +135,14 @@ def find_return_loads(
             # --- Capacity check ---
             if load.get("weight_kg", 0) > max_weight:
                 continue
-            if load.get("length_m", 0) > max_length:
-                continue
-            if load.get("width_m", 0) > max_width:
-                continue
-            if load.get("height_m", 0) > max_height:
+            if not _fits_any_orientation(
+                load.get("length_m", 0),
+                load.get("width_m", 0),
+                load.get("height_m", 0),
+                max_length,
+                max_width,
+                max_height,
+            ):
                 continue
 
             # --- Distance calculations ---
