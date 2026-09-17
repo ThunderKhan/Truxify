@@ -39,29 +39,32 @@ contract FreightAMM is Ownable, ReentrancyGuard {
         require(_amountIn > 0, "Swap amount must be > 0");
         require(reserveCredit > 0 && reserveStable > 0, "Pool not seeded");
 
-        // Fee is charged on the input amount and kept in the pool reserve so
-        // it is collected rather than truncated away.
-        uint256 feeAmount = (_amountIn * swapFeeBps) / 10000;
-        uint256 amountInNet = _amountIn - feeAmount;
+        uint256 amountInReceived;
 
         if (_isCreditToStable) {
-            require(creditToken.transferFrom(msg.sender, address(this), _amountIn), "Transfer failed");
-            
+            amountInReceived = _transferIn(creditToken, _amountIn);
+
+            uint256 feeAmount = (amountInReceived * swapFeeBps) / 10000;
+            uint256 amountInNet = amountInReceived - feeAmount;
+
             // Constant product equation evaluation: dy = (y * dx) / (x + dx)
-            amountOut = (reserveStable * amountInNet) / (reserveCredit + _amountIn);
+            amountOut = (reserveStable * amountInNet) / (reserveCredit + amountInReceived);
             require(amountOut >= _minAmountOut, "Swap output below minAmountOut");
 
-            reserveCredit += _amountIn;
+            reserveCredit += amountInReceived;
             reserveStable -= amountOut;
 
             require(stablecoinToken.transfer(msg.sender, amountOut), "Payout transfer failed");
         } else {
-            require(stablecoinToken.transferFrom(msg.sender, address(this), _amountIn), "Transfer failed");
-            
-            amountOut = (reserveCredit * amountInNet) / (reserveStable + _amountIn);
+            amountInReceived = _transferIn(stablecoinToken, _amountIn);
+
+            uint256 feeAmount = (amountInReceived * swapFeeBps) / 10000;
+            uint256 amountInNet = amountInReceived - feeAmount;
+
+            amountOut = (reserveCredit * amountInNet) / (reserveStable + amountInReceived);
             require(amountOut >= _minAmountOut, "Swap output below minAmountOut");
 
-            reserveStable += _amountIn;
+            reserveStable += amountInReceived;
             reserveCredit -= amountOut;
 
             require(creditToken.transfer(msg.sender, amountOut), "Payout transfer failed");
@@ -77,12 +80,22 @@ contract FreightAMM is Ownable, ReentrancyGuard {
     }
 
     function addLiquidity(uint256 _creditAmount, uint256 _stableAmount) external onlyOwner {
-        require(creditToken.transferFrom(msg.sender, address(this), _creditAmount), "Credit transfer failed");
-        require(stablecoinToken.transferFrom(msg.sender, address(this), _stableAmount), "Stable transfer failed");
+        uint256 creditReceived = _transferIn(creditToken, _creditAmount);
+        uint256 stableReceived = _transferIn(stablecoinToken, _stableAmount);
 
-        reserveCredit += _creditAmount;
-        reserveStable += _stableAmount;
+        reserveCredit += creditReceived;
+        reserveStable += stableReceived;
 
-        emit LiquidityAdded(msg.sender, _creditAmount, _stableAmount);
+        emit LiquidityAdded(msg.sender, creditReceived, stableReceived);
+    }
+
+    function _transferIn(IERC20 token, uint256 amount) internal returns (uint256 received) {
+        uint256 balanceBefore = token.balanceOf(address(this));
+        require(token.transferFrom(msg.sender, address(this), amount), "Transfer failed");
+        uint256 balanceAfter = token.balanceOf(address(this));
+        require(balanceAfter >= balanceBefore, "Token balance decreased");
+
+        received = balanceAfter - balanceBefore;
+        require(received > 0, "No tokens received");
     }
 }
