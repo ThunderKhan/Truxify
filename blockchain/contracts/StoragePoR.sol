@@ -21,6 +21,7 @@ contract StoragePoR is Ownable {
     // Without a commitment there is nothing on-chain to verify against
     // (issue #11664).
     mapping(address => bytes32) public dataRoots;
+    mapping(address => bool) public slashedProviders;
 
     address public verifier;
 
@@ -37,6 +38,7 @@ contract StoragePoR is Ownable {
     event ChallengeIssued(address indexed provider, uint256 blockIndex);
     event ProofVerified(address indexed provider, bytes32 merkelProofHash, bool success);
     event ProviderSlashed(address indexed provider, uint256 slashedAmount);
+    event ProviderRegistered(address indexed provider, uint256 collateral);
 
     constructor() Ownable(msg.sender) {
         verifier = msg.sender;
@@ -48,13 +50,20 @@ contract StoragePoR is Ownable {
     }
 
     function registerProvider(uint256 _collateral) external payable {
+        NodeStatus storage node = providers[msg.sender];
+        require(!node.active, "Provider already active");
+        require(!slashedProviders[msg.sender], "Provider permanently slashed");
+        require(_collateral > 0, "Collateral required");
         require(msg.value >= _collateral, "Insufficient collateral deposit");
+
         providers[msg.sender] = NodeStatus({
             storageProvider: msg.sender,
             lastVerifiedBlock: block.number,
             lockedCollateral: msg.value,
             active: true
         });
+
+        emit ProviderRegistered(msg.sender, msg.value);
     }
 
     /**
@@ -101,6 +110,7 @@ contract StoragePoR is Ownable {
             emit ProofVerified(_provider, computedRoot, true);
         } else {
             node.active = false;
+            slashedProviders[_provider] = true;
             uint256 total = node.lockedCollateral;
             uint256 penalty = (total * SLASH_RATE) / 100;
             uint256 returned = total - penalty;
