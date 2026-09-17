@@ -59,10 +59,24 @@ class _Shelf:
         height: float,
         max_height_limit: float | None = None,
     ) -> dict | None:
-        """Attempt to place an item; return position dict or *None*."""
-        # Try both orientations (rotate length ↔ width)
-        for rotated, l, w in [(False, length, width), (True, width, length)]:
-            pos = self._fit(l, w, height, rotated, max_height_limit)
+        """Attempt to place an item in any of its six axis-aligned orientations."""
+        orientations = (
+            (False, length, width, height),
+            (True, length, height, width),
+            (True, width, length, height),
+            (True, width, height, length),
+            (True, height, length, width),
+            (True, height, width, length),
+        )
+
+        seen = set()
+        for rotated, l, w, h in orientations:
+            orientation = (l, w, h)
+            if orientation in seen:
+                continue
+            seen.add(orientation)
+
+            pos = self._fit(l, w, h, rotated, max_height_limit)
             if pos is not None:
                 return pos
         return None
@@ -184,16 +198,6 @@ def _pack_packages(
         if not placed:
             # Open a new shelf
             z_offset = sum(s.shelf_height for s in shelves)
-            if z_offset + pkg_height > truck_h:
-                arrangements[idx] = {
-                    "package_index": idx,
-                    "position": {"x": 0.0, "y": 0.0, "z": 0.0},
-                    "rotated": False,
-                    "fits": False,
-                }
-                unpacked.append(idx)
-                continue
-
             new_shelf = _Shelf(z_offset, truck_l, truck_w, truck_h - z_offset)
             pos = new_shelf.try_place(pkg_length, pkg_width, pkg_height)
             if pos is not None:
