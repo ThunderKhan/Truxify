@@ -27,7 +27,10 @@ router.post('/optimize', authenticate, userLimiter, async (req, res) => {
       plan
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message || 'Failed to optimize AR container loading plan' });
+    const statusCode = Number.isInteger(err?.statusCode) ? err.statusCode : 500;
+    return res.status(statusCode).json({
+      error: err.message || 'Failed to optimize AR container loading plan'
+    });
   }
 });
 
