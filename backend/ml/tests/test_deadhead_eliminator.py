@@ -6,17 +6,10 @@ Run with: python3 -m pytest tests/test_deadhead_eliminator.py -v --no-header
 import math
 from datetime import datetime, timezone, timedelta
 
-from app.models.deadhead_eliminator import (
-    _haversine,
-    _to_naive,
-    find_return_loads,
-    MAX_DETOUR_FRACTION,
-)
+from app.models.deadhead_eliminator import _haversine, _to_naive, find_return_loads
 
 
 class TestHaversine:
-    """Tests for the haversine distance calculation."""
-
     def test_same_point_returns_zero(self):
         assert _haversine(0, 0, 0, 0) == 0.0
 
@@ -34,8 +27,6 @@ class TestHaversine:
 
 
 class TestToNaive:
-    """Tests for UTC datetime normalization."""
-
     def test_aware_datetime_is_normalized_to_utc(self):
         aware = datetime(2026, 8, 7, 10, 30, tzinfo=timezone(timedelta(hours=5, minutes=30)))
         result = _to_naive(aware)
@@ -54,8 +45,6 @@ class TestToNaive:
 
 
 class TestFindReturnLoads:
-    """Tests for find_return_loads logic."""
-
     def test_empty_loads_returns_empty_recommendations(self):
         result = find_return_loads(
             driver_destination={"lat": 12.97, "lng": 77.62},
@@ -130,12 +119,10 @@ class TestFindReturnLoads:
         assert result["recommendations"] == []
 
     def test_equivalent_timezone_offsets_preserve_load_feasibility(self):
-        arrival_time = "2026-09-17T10:00:00+05:30"
-        deadline = "2026-09-17T06:00:00+00:00"
         result = find_return_loads(
             driver_destination={"lat": 0.0, "lng": 0.0},
             truck_specs={"max_weight_kg": 10000, "max_length_m": 10, "max_width_m": 2.5, "max_height_m": 3},
-            arrival_time=arrival_time,
+            arrival_time="2026-09-17T10:00:00+05:30",
             available_loads=[{
                 "load_id": "L-TZ",
                 "origin_lat": 0.0,
@@ -146,21 +133,20 @@ class TestFindReturnLoads:
                 "length_m": 1,
                 "width_m": 1,
                 "height_m": 1,
-                "pickup_deadline": deadline,
+                "pickup_deadline": "2026-09-17T06:30:00+00:00",
                 "payment_inr": 1000,
             }],
         )
-        assert result["recommendations"] == []
+        assert len(result["recommendations"]) == 1
+        assert result["recommendations"][0]["load_id"] == "L-TZ"
 
-    def test_offset_deadline_after_arrival_is_not_shifted_earlier(self):
-        arrival_time = "2026-09-17T10:00:00+05:30"
-        deadline = "2026-09-17T06:30:00+00:00"
+    def test_timezone_offset_is_not_stripped_as_wall_clock_time(self):
         result = find_return_loads(
             driver_destination={"lat": 0.0, "lng": 0.0},
             truck_specs={"max_weight_kg": 10000, "max_length_m": 10, "max_width_m": 2.5, "max_height_m": 3},
-            arrival_time=arrival_time,
+            arrival_time="2026-09-17T10:00:00+05:30",
             available_loads=[{
-                "load_id": "L-TZ-FEASIBLE",
+                "load_id": "L-TZ-WALL-CLOCK",
                 "origin_lat": 0.0,
                 "origin_lng": 0.0,
                 "dest_lat": 0.1,
@@ -169,8 +155,8 @@ class TestFindReturnLoads:
                 "length_m": 1,
                 "width_m": 1,
                 "height_m": 1,
-                "pickup_deadline": deadline,
+                "pickup_deadline": "2026-09-17T05:00:00+00:00",
                 "payment_inr": 1000,
             }],
         )
-        assert result["recommendations"][0]["load_id"] == "L-TZ-FEASIBLE"
+        assert result["recommendations"] == []
