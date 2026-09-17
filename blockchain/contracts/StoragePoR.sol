@@ -2,12 +2,13 @@
 pragma solidity ^0.8.20;
 
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title StoragePoR
  * @dev Cryptographic Proof of Retrievability (PoR) verifier smart contract for decentralized document archival.
  */
-contract StoragePoR is Ownable {
+contract StoragePoR is Ownable, ReentrancyGuard {
 
     struct NodeStatus {
         address storageProvider;
@@ -21,6 +22,7 @@ contract StoragePoR is Ownable {
     // Without a commitment there is nothing on-chain to verify against
     // (issue #11664).
     mapping(address => bytes32) public dataRoots;
+    mapping(address => uint256) public exitRequestedAt;
 
     address public verifier;
 
@@ -28,6 +30,7 @@ contract StoragePoR is Ownable {
     ///      proof. Slashing is bounded so a single bad challenge cannot drain
     ///      100% of a provider's stake to the verifier (issue #14676).
     uint256 public constant SLASH_RATE = 50;
+    uint256 public constant UNBONDING_PERIOD = 7 days;
 
     modifier onlyVerifier() {
         require(msg.sender == verifier, "Only the verifier may submit proofs");
@@ -37,6 +40,8 @@ contract StoragePoR is Ownable {
     event ChallengeIssued(address indexed provider, uint256 blockIndex);
     event ProofVerified(address indexed provider, bytes32 merkelProofHash, bool success);
     event ProviderSlashed(address indexed provider, uint256 slashedAmount);
+    event ProviderExitRequested(address indexed provider, uint256 withdrawAvailableAt);
+    event CollateralWithdrawn(address indexed provider, uint256 amount);
 
     constructor() Ownable(msg.sender) {
         verifier = msg.sender;
@@ -55,6 +60,39 @@ contract StoragePoR is Ownable {
             lockedCollateral: msg.value,
             active: true
         });
+        dataRoots[msg.sender] = bytes32(0);
+        exitRequestedAt[msg.sender] = 0;
+    }
+
+    function requestExit() external {
+        NodeStatus storage node = providers[msg.sender];
+        require(node.active, "Provider not active");
+        require(node.lockedCollateral > 0, "No collateral locked");
+        require(exitRequestedAt[msg.sender] == 0, "Exit already requested");
+
+        uint256 withdrawAvailableAt = block.timestamp + UNBONDING_PERIOD;
+        exitRequestedAt[msg.sender] = block.timestamp;
+        emit ProviderExitRequested(msg.sender, withdrawAvailableAt);
+    }
+
+    function withdrawCollateral() external nonReentrant {
+        NodeStatus storage node = providers[msg.sender];
+        uint256 requestedAt = exitRequestedAt[msg.sender];
+
+        require(node.active, "Provider not active");
+        require(requestedAt != 0, "Exit not requested");
+        require(block.timestamp >= requestedAt + UNBONDING_PERIOD, "Unbonding period active");
+        require(node.lockedCollateral > 0, "No collateral locked");
+
+        uint256 amount = node.lockedCollateral;
+        node.active = false;
+        node.lockedCollateral = 0;
+        exitRequestedAt[msg.sender] = 0;
+
+        (bool sent, ) = payable(msg.sender).call{value: amount}("");
+        require(sent, "Collateral withdrawal failed");
+
+        emit CollateralWithdrawn(msg.sender, amount);
     }
 
     /**
@@ -64,6 +102,7 @@ contract StoragePoR is Ownable {
      */
     function commitDataRoot(bytes32 _dataRoot) external {
         require(providers[msg.sender].active, "Provider not active");
+        require(exitRequestedAt[msg.sender] == 0, "Exit already requested");
         dataRoots[msg.sender] = _dataRoot;
     }
 
@@ -101,6 +140,7 @@ contract StoragePoR is Ownable {
             emit ProofVerified(_provider, computedRoot, true);
         } else {
             node.active = false;
+            exitRequestedAt[_provider] = 0;
             uint256 total = node.lockedCollateral;
             uint256 penalty = (total * SLASH_RATE) / 100;
             uint256 returned = total - penalty;
