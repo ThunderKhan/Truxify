@@ -21,17 +21,24 @@ class ARLoadingOptimizerService {
     }
 
     const {
-      lengthCm = 1615, // 53ft trailer length
+      lengthCm = 1615,
       widthCm = 259,
       heightCm = 280,
       maxPayloadKg = 20000
     } = container;
 
+    for (const [dimension, value] of Object.entries({ lengthCm, widthCm, heightCm })) {
+      if (!Number.isFinite(value) || value <= 0) {
+        const error = new Error(`Invalid container ${dimension}`);
+        error.statusCode = 400;
+        throw error;
+      }
+    }
+
     const totalContainerVolume = lengthCm * widthCm * heightCm;
     let totalWeightKg = 0;
     let totalPalletVolume = 0;
 
-    // 3D positioning computation for AR overlay
     let currentX = 0;
     let currentY = 0;
     let currentZ = 0;
@@ -39,15 +46,33 @@ class ARLoadingOptimizerService {
     let layerMaxZ = 0;
 
     const placedPallets = pallets.map((pallet, index) => {
-      const pLen = pallet.lengthCm || 120;
-      const pWidth = pallet.widthCm || 100;
-      const pHeight = pallet.heightCm || 150;
-      const pWeight = pallet.weightKg || 500;
+      const pLen = pallet.lengthCm ?? 120;
+      const pWidth = pallet.widthCm ?? 100;
+      const pHeight = pallet.heightCm ?? 150;
+      const pWeight = pallet.weightKg ?? 500;
+      const palletLabel = pallet.id || `PLT-${index + 1}`;
+
+      for (const [dimension, value] of Object.entries({
+        lengthCm: pLen,
+        widthCm: pWidth,
+        heightCm: pHeight
+      })) {
+        if (!Number.isFinite(value) || value <= 0) {
+          const error = new Error(`Invalid pallet ${dimension} for pallet ${palletLabel}`);
+          error.statusCode = 400;
+          throw error;
+        }
+      }
+
+      if (pLen > lengthCm || pWidth > widthCm || pHeight > heightCm) {
+        const error = new Error(`Pallet ${palletLabel} exceeds container dimensions`);
+        error.statusCode = 400;
+        throw error;
+      }
 
       totalWeightKg += pWeight;
-      totalPalletVolume += (pLen * pWidth * pHeight);
+      totalPalletVolume += pLen * pWidth * pHeight;
 
-      // Simple 3D grid layout logic
       if (currentX + pLen > lengthCm) {
         currentX = 0;
         currentY += rowMaxY;
@@ -67,19 +92,28 @@ class ARLoadingOptimizerService {
         zCm: currentZ
       };
 
-      currentX += pLen;
+      const maxX = position3D.xCm + pLen;
+      const maxY = position3D.yCm + pWidth;
+      const maxZ = position3D.zCm + pHeight;
+      if (maxX > lengthCm || maxY > widthCm || maxZ > heightCm) {
+        const error = new Error(`Pallet ${palletLabel} placement exceeds container bounds`);
+        error.statusCode = 400;
+        throw error;
+      }
+
+      currentX = maxX;
       rowMaxY = Math.max(rowMaxY, pWidth);
       layerMaxZ = Math.max(layerMaxZ, pHeight);
 
       return {
         stepNumber: index + 1,
-        palletId: pallet.id || `PLT-${index + 1}`,
+        palletId: palletLabel,
         weightKg: pWeight,
         dimensionsCm: { length: pLen, width: pWidth, height: pHeight },
         position3D,
         arBoundingBox: {
           min: [position3D.xCm / 100, position3D.yCm / 100, position3D.zCm / 100],
-          max: [(position3D.xCm + pLen) / 100, (position3D.yCm + pWidth) / 100, (position3D.zCm + pHeight) / 100]
+          max: [maxX / 100, maxY / 100, maxZ / 100]
         }
       };
     });
@@ -87,7 +121,6 @@ class ARLoadingOptimizerService {
     const volumeUtilizationPercent = Number(((totalPalletVolume / totalContainerVolume) * 100).toFixed(1));
     const payloadCapacityPercent = Number(((totalWeightKg / maxPayloadKg) * 100).toFixed(1));
 
-    // Axle weight balance calculation (Front 40%, Rear 60% optimal distribution)
     const frontAxleLoadKg = Math.round(totalWeightKg * 0.42);
     const rearAxleLoadKg = Math.round(totalWeightKg * 0.58);
 
