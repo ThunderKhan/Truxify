@@ -130,3 +130,57 @@ class TestFindReturnLoads:
             }],
         )
         assert result["recommendations"] == []
+
+    def test_rotatable_load_is_recommended(self):
+        """A load that only fits after axis-aligned rotation should be accepted."""
+        result = find_return_loads(
+            driver_destination={"lat": 0.0, "lng": 0.0},
+            truck_specs={
+                "max_weight_kg": 10000,
+                "max_length_m": 10,
+                "max_width_m": 2,
+                "max_height_m": 2,
+            },
+            arrival_time="2026-08-10T08:00:00",
+            available_loads=[{
+                "load_id": "L-ROTATE",
+                "origin_lat": 0.0,
+                "origin_lng": 0.0,
+                "dest_lat": 0.1,
+                "dest_lng": 0.1,
+                "weight_kg": 100,
+                "length_m": 2,
+                "width_m": 2,
+                "height_m": 10,
+                "pickup_deadline": "2026-08-10T14:00:00",
+                "payment_inr": 1000,
+            }],
+        )
+        assert [item["load_id"] for item in result["recommendations"]] == ["L-ROTATE"]
+
+    def test_load_with_no_feasible_orientation_is_filtered(self):
+        """A load exceeding every axis-aligned truck orientation must be rejected."""
+        result = find_return_loads(
+            driver_destination={"lat": 0.0, "lng": 0.0},
+            truck_specs={
+                "max_weight_kg": 10000,
+                "max_length_m": 10,
+                "max_width_m": 2,
+                "max_height_m": 2,
+            },
+            arrival_time="2026-08-10T08:00:00",
+            available_loads=[{
+                "load_id": "L-NO-ROTATION",
+                "origin_lat": 0.0,
+                "origin_lng": 0.0,
+                "dest_lat": 0.1,
+                "dest_lng": 0.1,
+                "weight_kg": 100,
+                "length_m": 10.1,
+                "width_m": 2.1,
+                "height_m": 2.1,
+                "pickup_deadline": "2026-08-10T14:00:00",
+                "payment_inr": 1000,
+            }],
+        )
+        assert result["recommendations"] == []
