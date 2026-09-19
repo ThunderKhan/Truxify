@@ -43,6 +43,57 @@ describe("StateChannel", function () {
       assert.equal(stored.balanceA, total);
       assert.equal(stored.balanceB, 0n);
       assert.equal(stored.isDisputed, false);
+      assert.equal(stored.initialExitExpiry > 0n, true);
+    });
+  });
+
+  describe("recoverInitialFunding", function () {
+    it("rejects recovery before the initial timeout", async function () {
+      const { channel, partyA, channelId } = await deployChannel();
+
+      await assertRejectsWith(
+        channel.connect(partyA).recoverInitialFunding(channelId),
+        "Initial recovery period active"
+      );
+    });
+
+    it("returns the initial deposit after the timeout when no signed state exists", async function () {
+      const { channel, partyA, partyB, channelId, total } = await deployChannel();
+
+      await time.increase(CHALLENGE_PERIOD + 1);
+      await channel.connect(partyA).recoverInitialFunding(channelId);
+
+      const stored = await channel.channels(channelId);
+      assert.equal(stored.isClosed, true);
+      assert.equal(stored.isDisputed, false);
+      assert.equal(stored.balanceA, 0n);
+      assert.equal(stored.balanceB, 0n);
+      assert.equal(await channel.pendingWithdrawals(partyA.address), 0n);
+      assert.equal(await ethers.provider.getBalance(await channel.getAddress()), 0n);
+
+      // userB never had funds in the initial state and cannot be paid by this path.
+      assert.equal(partyB.address !== ethers.ZeroAddress, true);
+    });
+
+    it("does not bypass an active dispute", async function () {
+      const { channel, partyA, partyB, channelId, total } = await deployChannel();
+      const balanceA = (total * 6n) / 10n;
+      const balanceB = total - balanceA;
+      const sigB = await signState(partyB, channel, channelId, balanceA, balanceB, 1n);
+
+      await channel.connect(partyA).initiateUnilateralExit(
+        channelId,
+        1n,
+        balanceA,
+        balanceB,
+        sigB
+      );
+
+      await time.increase(CHALLENGE_PERIOD + 1);
+      await assertRejectsWith(
+        channel.connect(partyA).recoverInitialFunding(channelId),
+        "Channel disputed"
+      );
     });
   });
 
