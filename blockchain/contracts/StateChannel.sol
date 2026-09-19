@@ -20,6 +20,7 @@ contract StateChannel is ReentrancyGuard {
         uint256 balanceB;
         uint256 sequence;
         uint256 challengeExpiry;
+        uint256 initialExitExpiry;
         bool isDisputed;
         bool isClosed;
     }
@@ -49,11 +50,34 @@ contract StateChannel is ReentrancyGuard {
             balanceB: 0,
             sequence: 0,
             challengeExpiry: 0,
+            initialExitExpiry: block.timestamp + CHALLENGE_PERIOD,
             isDisputed: false,
             isClosed: false
         });
 
         emit ChannelOpened(channelId, msg.sender, userB, msg.value);
+    }
+
+    /**
+     * @notice Returns the depositor's initial funding when no mutually-signed state was ever established.
+     * @dev This path is only available before a dispute starts and cannot recover counterparty funds.
+     */
+    function recoverInitialFunding(bytes32 channelId) external nonReentrant {
+        Channel storage channel = channels[channelId];
+        require(!channel.isClosed, "Channel closed");
+        require(!channel.isDisputed, "Channel disputed");
+        require(msg.sender == channel.userA, "Only user A");
+        require(channel.balanceB == 0, "Counterparty funded");
+        require(block.timestamp >= channel.initialExitExpiry, "Initial recovery period active");
+
+        uint256 amount = channel.balanceA;
+        require(amount > 0, "No initial funding");
+
+        channel.balanceA = 0;
+        channel.isClosed = true;
+
+        _safeTransferOrCredit(channel.userA, amount);
+        emit ChannelClosed(channelId, amount, 0);
     }
 
     function initiateUnilateralExit(
