@@ -245,6 +245,10 @@ contract zkEVM is Ownable, ReentrancyGuard, Pausable {
 
         require(_verifyProof(proof, user, amount), "Invalid proof");
 
+        bytes32 proofNullifier = keccak256(proof);
+        require(!currentState.processedNullifiers[proofNullifier], "Proof already used");
+        currentState.processedNullifiers[proofNullifier] = true;
+
         currentState.balances[user] -= amount;
         payable(msg.sender).transfer(amount);
         emit BridgeWithdraw(user, amount);
