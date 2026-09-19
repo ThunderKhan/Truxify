@@ -30,6 +30,102 @@ function calculateHaversineDistance(lat1, lon1, lat2, lon2) {
   return R * c; // in meters
 }
 
+/**
+ * @openapi
+ * components:
+ *   securitySchemes:
+ *     BearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
+ *   schemas:
+ *     DeliveryConfirmationRequest:
+ *       type: object
+ *       required: [otp]
+ *       properties:
+ *         otp:
+ *           type: string
+ *           pattern: '^\\d{4}$'
+ *           minLength: 4
+ *           maxLength: 4
+ *           description: Server-verified four-digit delivery OTP.
+ *           example: '4821'
+ *         latitude:
+ *           type: number
+ *           description: Optional caller-provided latitude. It is not used as the delivery authorization signal.
+ *           example: 19.076
+ *         longitude:
+ *           type: number
+ *           description: Optional caller-provided longitude. It is not used as the delivery authorization signal.
+ *           example: 72.8777
+ *     DeliveryConfirmationResponse:
+ *       type: object
+ *       required: [success, message, payment_released, isGeofenced]
+ *       properties:
+ *         success: { type: boolean, example: true }
+ *         message: { type: string, example: Delivery verified successfully! Payment released to driver. }
+ *         payment_released: { type: boolean, example: true }
+ *         isGeofenced: { type: boolean, example: true }
+ *     DeliveryConfirmationAcceptedResponse:
+ *       type: object
+ *       required: [message, escrow_status, payment_released, isGeofenced]
+ *       properties:
+ *         message: { type: string, example: Delivery verified successfully. Escrow payout requires reconciliation. }
+ *         escrow_status: { type: string, example: released }
+ *         payment_released: { type: boolean, example: true }
+ *         isGeofenced: { type: boolean, example: true }
+ *     DeliveryConfirmationError:
+ *       type: object
+ *       properties:
+ *         error: { type: string }
+ * /api/delivery/{id}/confirm-otp:
+ *   post:
+ *     tags: [Delivery]
+ *     summary: Confirm delivery with the server-verified OTP
+ *     description: Confirms delivery for the driver assigned to the order and releases the associated escrow payment. Caller-supplied GPS coordinates do not replace OTP verification.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: id
+ *         in: path
+ *         required: true
+ *         description: Order identifier accepted by the order repository.
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             $ref: '#/components/schemas/DeliveryConfirmationRequest'
+ *     responses:
+ *       200:
+ *         description: Delivery verified and payment released.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/DeliveryConfirmationResponse'
+ *       202:
+ *         description: Delivery verified while escrow payout requires reconciliation.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/DeliveryConfirmationAcceptedResponse'
+ *       400:
+ *         description: Missing or invalid OTP.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/DeliveryConfirmationError'
+ *       401:
+ *         description: Authentication is required.
+ *       403:
+ *         description: Caller is not the driver assigned to the order.
+ *       404:
+ *         description: Order not found.
+ *       500:
+ *         description: Delivery confirmation failed or an internal server error occurred.
+ */
 router.post('/:id/confirm-otp', authenticate, userLimiter, validateBody(confirmOtpSchema), async (req, res) => {
   try {
     const orderId = req.params.id;
