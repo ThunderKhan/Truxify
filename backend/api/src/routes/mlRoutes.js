@@ -11,6 +11,41 @@ import { haversineKm } from '../lib/pricing.js';
 
 const router = express.Router();
 
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     MlDemandHeatmapResponse:
+ *       type: object
+ *       required:
+ *         - zone_id
+ *         - predicted_demand
+ *         - confidence
+ *         - recommended_multipliers
+ *       properties:
+ *         zone_id:
+ *           type: string
+ *           example: zone-1
+ *         predicted_demand:
+ *           type: number
+ *           format: float
+ *           description: Predicted demand level for the requested zone.
+ *           example: 0.75
+ *         confidence:
+ *           type: number
+ *           format: float
+ *           description: Confidence associated with the prediction.
+ *           example: 0.85
+ *         recommended_multipliers:
+ *           type: object
+ *           additionalProperties:
+ *             type: number
+ *           description: Recommended pricing or demand multipliers returned by the ML model.
+ *           example:
+ *             base: 1.2
+ *             rush: 1.5
+ */
+
 function parseCoord(value, min, max) {
   const n = Number(value);
   return Number.isFinite(n) && n >= min && n <= max ? n : null;
@@ -20,6 +55,32 @@ function parseCoord(value, min, max) {
 // 1. GET DEMAND HEATMAP
 // GET /api/ml/demand-heatmap
 // ============================================================================
+/**
+ * @swagger
+ * /api/ml/demand-heatmap:
+ *   get:
+ *     summary: Get ML demand heatmap prediction
+ *     description: Returns the demand prediction for a zone. The endpoint uses a short-lived cache keyed by zoneId and falls back to a deterministic response when the ML engine is unavailable.
+ *     tags:
+ *       - Machine Learning
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: zoneId
+ *         required: false
+ *         description: Zone identifier used by the demand model and response cache. Defaults to zone-1.
+ *         schema:
+ *           type: string
+ *           minLength: 1
+ *     responses:
+ *       '200':
+ *         description: Demand prediction from the ML engine or deterministic fallback.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/MlDemandHeatmapResponse'
+ */
 router.get(
   '/demand-heatmap',
   authenticate,
