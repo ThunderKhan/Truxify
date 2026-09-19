@@ -74,6 +74,42 @@ describe("zkEVM withdrawal proof binding", function () {
 
     expect(await zkEVM.getBalance(withdrawer.address)).to.equal(0n);
   });
+  it("rejects replay across direct and bridge withdrawal paths", async function () {
+    const { owner, withdrawer, zkEVM } = await deployFixture();
+    const Bridge = await ethers.getContractFactory("zkEVMBridge");
+    const bridge = await Bridge.deploy(await zkEVM.getAddress());
+    await bridge.waitForDeployment();
+
+    await zkEVM.connect(owner).setBridge(await bridge.getAddress());
+    await bridge.connect(owner).setBridgeFee(0);
+
+    const depositAmount = ethers.parseEther("4");
+    const withdrawalAmount = ethers.parseEther("1");
+    await bridge.connect(withdrawer).depositToL2({ value: depositAmount });
+
+    const proof = encodeProof(withdrawer.address, withdrawalAmount);
+
+    await zkEVM
+      .connect(withdrawer)
+      .withdrawFromL2(withdrawalAmount, proof);
+
+    await expect(
+      bridge.connect(withdrawer).withdrawFromL2(withdrawalAmount, proof)
+    ).to.be.revertedWith("Proof already used");
+
+    const secondProof = encodeProof(withdrawer.address, withdrawalAmount + 1n);
+    await expect(
+      bridge.connect(withdrawer).withdrawFromL2(withdrawalAmount + 1n, secondProof)
+    ).to.emit(bridge, "BridgeWithdraw")
+      .withArgs(withdrawer.address, withdrawalAmount + 1n);
+
+    await expect(
+      zkEVM
+        .connect(withdrawer)
+        .withdrawFromL2(withdrawalAmount + 1n, secondProof)
+    ).to.be.revertedWith("Proof already used");
+  });
+
   it("rejects replay of a successful proof after the balance is replenished", async function () {
     const { withdrawer, zkEVM } = await deployFixture();
     const amount = ethers.parseEther("1");
