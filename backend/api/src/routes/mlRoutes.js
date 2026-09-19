@@ -182,6 +182,73 @@ router.get(
   }
 );
 
+/**
+ * @openapi
+ * components:
+ *   securitySchemes:
+ *     BearerAuth:
+ *       type: http
+ *       scheme: bearer
+ *       bearerFormat: JWT
+ *   schemas:
+ *     MlAbTestingRollbackResponse:
+ *       type: object
+ *       required: [action, test_id, reason, timestamp]
+ *       properties:
+ *         action:
+ *           type: string
+ *           enum: [insufficient_metrics, rollback, rollback_failed, promote]
+ *           example: rollback
+ *         test_id:
+ *           type: string
+ *           example: test-2026-09-19
+ *         reason:
+ *           type: string
+ *           example: Shadow model underperformed
+ *         rolled_back:
+ *           type: boolean
+ *           description: Whether the previous model generation was restored.
+ *           example: true
+ *         production_version:
+ *           type: string
+ *           description: Active production model generation after the operation.
+ *           example: generation-42
+ *         timestamp:
+ *           type: string
+ *           format: date-time
+ * /api/ml/ab-testing/rollback/{testId}:
+ *   post:
+ *     tags: [ML A/B Testing]
+ *     summary: Roll back an ML A/B test
+ *     description: Triggers an administrator-only rollback evaluation for the specified ML A/B test.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - name: testId
+ *         in: path
+ *         required: true
+ *         description: A/B test identifier to evaluate for rollback.
+ *         schema:
+ *           type: string
+ *           minLength: 1
+ *           maxLength: 100
+ *         example: test-2026-09-19
+ *     responses:
+ *       200:
+ *         description: Rollback evaluation completed.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/MlAbTestingRollbackResponse'
+ *       401:
+ *         description: Authentication is required.
+ *       403:
+ *         description: Caller does not have administrator privileges.
+ *       429:
+ *         description: Rate limit exceeded.
+ *       502:
+ *         description: Failed to trigger rollback on the ML engine.
+ */
 router.post(
   '/ab-testing/rollback/:testId',
   authenticate,
