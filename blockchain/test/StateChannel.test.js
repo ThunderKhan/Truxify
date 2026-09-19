@@ -71,8 +71,6 @@ describe("StateChannel", function () {
       assert.equal(await channel.pendingWithdrawals(partyA.address), 0n);
       assert.equal(await ethers.provider.getBalance(await channel.getAddress()), 0n);
 
-      // userB never had funds in the initial state and cannot be paid by this path.
-      assert.equal(partyB.address !== ethers.ZeroAddress, true);
     });
 
     it("does not bypass an active dispute", async function () {
