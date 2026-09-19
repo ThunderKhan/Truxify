@@ -74,4 +74,22 @@ describe("zkEVM withdrawal proof binding", function () {
 
     expect(await zkEVM.getBalance(withdrawer.address)).to.equal(0n);
   });
+  it("rejects replay of a successful proof after the balance is replenished", async function () {
+    const { withdrawer, zkEVM } = await deployFixture();
+    const amount = ethers.parseEther("1");
+
+    await zkEVM.connect(withdrawer).depositToL2({ value: ethers.parseEther("2") });
+
+    const proof = encodeProof(withdrawer.address, amount);
+    await zkEVM.connect(withdrawer).withdrawFromL2(amount, proof);
+
+    await zkEVM.connect(withdrawer).depositToL2({ value: amount });
+
+    await expect(
+      zkEVM.connect(withdrawer).withdrawFromL2(amount, proof)
+    ).to.be.revertedWith("Proof already used");
+
+    expect(await zkEVM.getBalance(withdrawer.address)).to.equal(amount);
+  });
+
 });
