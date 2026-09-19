@@ -32,6 +32,33 @@ async function signState(signer, channel, channelId, balanceA, balanceB, sequenc
   return signer.signMessage(ethers.getBytes(stateHash));
 }
 
+async function getStateDigest(channel, channelId, balanceA, balanceB, sequence) {
+  const network = await ethers.provider.getNetwork();
+  const channelAddress = await channel.getAddress();
+  const stateHash = ethers.solidityPackedKeccak256(
+    ["uint256", "address", "bytes32", "uint256", "uint256", "uint256"],
+    [network.chainId, channelAddress, channelId, sequence, balanceA, balanceB]
+  );
+  return ethers.hashMessage(ethers.getBytes(stateHash));
+}
+
+async function deploy1271Channel(total = ethers.parseEther("10")) {
+  const [owner, partyA, walletSigner] = await ethers.getSigners();
+  const Wallet = await ethers.getContractFactory("MockERC1271Wallet");
+  const wallet = await Wallet.deploy(walletSigner.address);
+  await wallet.waitForDeployment();
+
+  const StateChannel = await ethers.getContractFactory("StateChannel");
+  const channel = await StateChannel.deploy();
+  await channel.waitForDeployment();
+
+  const openTx = await channel.connect(partyA).openChannel(await wallet.getAddress(), { value: total });
+  const openReceipt = await openTx.wait();
+  const channelId = channel.interface.parseLog(openReceipt.logs[0]).args.channelId;
+
+  return { channel, owner, partyA, wallet, walletSigner, channelId, total };
+}
+
 describe("StateChannel", function () {
   describe("openChannel", function () {
     it("registers a funded channel between both participants", async function () {
@@ -143,6 +170,84 @@ describe("StateChannel", function () {
       );
       assert.equal(afterSecond.balanceA, (total * 7n) / 10n);
       assert.equal(afterSecond.balanceB, (total * 3n) / 10n);
+    });
+  });
+
+  describe("EIP-1271 contract-wallet signatures", function () {
+    it("accepts a compliant contract-wallet signature for unilateral exit", async function () {
+      const { channel, partyA, wallet, channelId, total } = await deploy1271Channel();
+      const balanceA = (total * 6n) / 10n;
+      const balanceB = total - balanceA;
+      const digest = await getStateDigest(channel, channelId, balanceA, balanceB, 1n);
+
+      await wallet.connect((await ethers.getSigners())[2]).approveDigest(digest);
+
+      await channel.connect(partyA).initiateUnilateralExit(
+        channelId,
+        1n,
+        balanceA,
+        balanceB,
+        "0x01"
+      );
+
+      const stored = await channel.channels(channelId);
+      assert.equal(stored.isDisputed, true);
+      assert.equal(stored.sequence, 1n);
+    });
+
+    it("allows a contract-wallet participant to respond with a newer signed state", async function () {
+      const { channel, partyA, wallet, walletSigner, channelId, total } = await deploy1271Channel();
+      const balanceA1 = (total * 6n) / 10n;
+      const balanceB1 = total - balanceA1;
+      const digest1 = await getStateDigest(channel, channelId, balanceA1, balanceB1, 1n);
+
+      await wallet.connect(walletSigner).approveDigest(digest1);
+      await channel.connect(partyA).initiateUnilateralExit(
+        channelId,
+        1n,
+        balanceA1,
+        balanceB1,
+        "0x01"
+      );
+
+      const balanceA2 = (total * 7n) / 10n;
+      const balanceB2 = total - balanceA2;
+      const sigA = await signState(partyA, channel, channelId, balanceA2, balanceB2, 2n);
+      const callData = channel.interface.encodeFunctionData("respondWithState", [
+        channelId,
+        2n,
+        balanceA2,
+        balanceB2,
+        sigA
+      ]);
+
+      await wallet.connect(walletSigner).execute(await channel.getAddress(), callData);
+
+      const stored = await channel.channels(channelId);
+      assert.equal(stored.sequence, 2n);
+      assert.equal(stored.balanceA, balanceA2);
+      assert.equal(stored.balanceB, balanceB2);
+    });
+
+    it("accepts a contract-wallet signature during cooperative close", async function () {
+      const { channel, partyA, wallet, walletSigner, channelId, total } = await deploy1271Channel();
+      const balanceA = total / 2n;
+      const balanceB = total - balanceA;
+      const digest = await getStateDigest(channel, channelId, balanceA, balanceB, 1n);
+      const sigA = await signState(partyA, channel, channelId, balanceA, balanceB, 1n);
+
+      await wallet.connect(walletSigner).approveDigest(digest);
+      await channel.connect(partyA).cooperativeClose(
+        channelId,
+        balanceA,
+        balanceB,
+        sigA,
+        "0x01"
+      );
+
+      const stored = await channel.channels(channelId);
+      assert.equal(stored.isClosed, true);
+      assert.equal(await ethers.provider.getBalance(await channel.getAddress()), 0n);
     });
   });
 
