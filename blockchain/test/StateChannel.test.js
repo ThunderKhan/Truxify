@@ -42,14 +42,6 @@ async function getStateDigest(channel, channelId, balanceA, balanceB, sequence) 
   return ethers.hashMessage(ethers.getBytes(stateHash));
 }
 
-async function getResponseStateDigest(channelId, balanceA, balanceB, sequence) {
-  const stateHash = ethers.solidityPackedKeccak256(
-    ["bytes32", "uint256", "uint256", "uint256"],
-    [channelId, sequence, balanceA, balanceB]
-  );
-  return ethers.hashMessage(ethers.getBytes(stateHash));
-}
-
 async function deploy1271Channel(total = ethers.parseEther("10")) {
   const [owner, partyA, walletSigner] = await ethers.getSigners();
   const Wallet = await ethers.getContractFactory("MockERC1271Wallet");
@@ -220,14 +212,14 @@ describe("StateChannel", function () {
 
       const balanceA2 = (total * 7n) / 10n;
       const balanceB2 = total - balanceA2;
-      const responseDigest = await getResponseStateDigest(channelId, balanceA2, balanceB2, 2n);
-      const sigA = await (() => {
-        return partyA.signMessage(ethers.getBytes(ethers.solidityPackedKeccak256(
-          ["bytes32", "uint256", "uint256", "uint256"],
-          [channelId, 2n, balanceA2, balanceB2]
-        )));
-      })();
-      void responseDigest;
+      const sigA = await partyA.signMessage(
+        ethers.getBytes(
+          ethers.solidityPackedKeccak256(
+            ["bytes32", "uint256", "uint256", "uint256"],
+            [channelId, 2n, balanceA2, balanceB2]
+          )
+        )
+      );
 
       const callData = channel.interface.encodeFunctionData("respondWithState", [
         channelId,
