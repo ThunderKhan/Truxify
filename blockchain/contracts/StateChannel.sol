@@ -4,6 +4,7 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/interfaces/IERC1271.sol";
 
 /**
  * @title StateChannel
@@ -80,9 +81,9 @@ contract StateChannel is ReentrancyGuard {
         bytes32 stateHash = keccak256(abi.encodePacked(block.chainid, address(this), channelId, sequence, balanceA, balanceB)).toEthSignedMessageHash();
         
         if (msg.sender == channel.userA) {
-            require(stateHash.recover(sig) == channel.userB, "Invalid signature from userB");
+            require(_isValidSignature(channel.userB, stateHash, sig), "Invalid signature from userB");
         } else {
-            require(stateHash.recover(sig) == channel.userA, "Invalid signature from userA");
+            require(_isValidSignature(channel.userA, stateHash, sig), "Invalid signature from userA");
         }
 
         channel.sequence = sequence;
@@ -117,9 +118,9 @@ contract StateChannel is ReentrancyGuard {
         bytes32 stateHash = keccak256(abi.encodePacked(channelId, sequence, balanceA, balanceB)).toEthSignedMessageHash();
         
         if (msg.sender == channel.userA) {
-            require(stateHash.recover(sig) == channel.userB, "Invalid signature from userB");
+            require(_isValidSignature(channel.userB, stateHash, sig), "Invalid signature from userB");
         } else {
-            require(stateHash.recover(sig) == channel.userA, "Invalid signature from userA");
+            require(_isValidSignature(channel.userA, stateHash, sig), "Invalid signature from userA");
         }
 
         channel.sequence = sequence;
@@ -142,8 +143,8 @@ contract StateChannel is ReentrancyGuard {
         require(balanceA + balanceB == channel.balanceA + channel.balanceB, "Invalid balance sum");
 
         bytes32 stateHash = keccak256(abi.encodePacked(block.chainid, address(this), channelId, channel.sequence + 1, balanceA, balanceB)).toEthSignedMessageHash();
-        require(stateHash.recover(sigA) == channel.userA, "Invalid sig A");
-        require(stateHash.recover(sigB) == channel.userB, "Invalid sig B");
+        require(_isValidSignature(channel.userA, stateHash, sigA), "Invalid sig A");
+        require(_isValidSignature(channel.userB, stateHash, sigB), "Invalid sig B");
 
         channel.isClosed = true;
 
@@ -168,6 +169,17 @@ contract StateChannel is ReentrancyGuard {
         _safeTransferOrCredit(channel.userB, amountB);
 
         emit ChannelClosed(channelId, amountA, amountB);
+    }
+
+    function _isValidSignature(
+        address signer,
+        bytes32 digest,
+        bytes memory signature
+    ) internal view returns (bool) {
+        if (signer.code.length > 0) {
+            return IERC1271(signer).isValidSignature(digest, signature) == IERC1271.isValidSignature.selector;
+        }
+        return digest.recover(signature) == signer;
     }
 
     /**
